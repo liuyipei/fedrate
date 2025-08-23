@@ -49,13 +49,14 @@ def fetch(
     delay = 1.0
     for attempt in range(1, max_retries + 1):
         t0 = time.time()
+        retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
         try:
             with httpx.Client(timeout=timeout_s, follow_redirects=True) as c:
                 r = c.request(method, url, params=params, json=json_body, headers=headers)
             meta = {"status": r.status_code, "ms": int((time.time() - t0) * 1000)}
             log.info(json.dumps({"event":"http_call","provider":provider,"meta":meta,"url":url}))
-            if r.status_code == 429:
-                raise RuntimeError("rate_limited")
+            if r.status_code in retryable_statuses:
+                raise RuntimeError(f"retryable_status:{r.status_code}")
             r.raise_for_status()
             body: Any
             if "application/json" in r.headers.get("content-type", ""):
