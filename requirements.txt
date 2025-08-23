@@ -1,0 +1,9 @@
+# requirements.txt
+crewai==0.76.9
+langchain==0.3.3
+langchain-openai==0.2.2
+langchain-community==0.3.2
+duckduckgo-search==6.3.5
+requests>=2.31
+tiktoken==0.7.0
+crewai-tools==0.12.0  # version compatible with crewai 0.76.9
