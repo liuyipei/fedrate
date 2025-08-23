@@ -44,11 +44,17 @@ from run_logging import (
     save_artifact,
     get_today,
 )
-from io_clients import fetch, save_llm_call, record_source_jsonl, load_sources_jsonl
+from io_clients import fetch, save_llm_call, record_source_jsonl, load_sources_jsonl, openrouter_chat
 
 
 log = init_logging()
 write_manifest()
+
+# ---- Model constants --------------------------------------------------------
+ANALYST_MODEL   = "z-ai/glm-4.5-air:free"
+FACTCHECK_MODEL = "moonshotai/kimi-k2:free"
+WRITER_MODEL    = "openai/gpt-oss-20b:free"
+
 
 # ---- Config -----------------------------------------------------------------
 @dataclass
@@ -58,6 +64,7 @@ class CliConfig:
     top_p: float
     seed: Optional[int]
     cache_only: bool
+    stub: bool
 
 
 def parse_args() -> CliConfig:
@@ -67,9 +74,17 @@ def parse_args() -> CliConfig:
     p.add_argument("--top_p", type=float, default=float(os.getenv("FEDRATE_TOP_P", 1.0)), help="LLM nucleus sampling")
     p.add_argument("--seed", type=int, default=os.getenv("FEDRATE_SEED"), nargs="?", help="LLM seed if supported")
     p.add_argument("--cache-only", action="store_true", help="Serve HTTP from cache if available (still writes cache on miss)")
+    p.add_argument("--stub", action="store_true", help="Use stub responses instead of calling real models")
     args = p.parse_args()
     today = get_today(args.today)
-    return CliConfig(today=today, temperature=args.temperature, top_p=args.top_p, seed=(int(args.seed) if args.seed is not None else None), cache_only=bool(args.cache_only))
+    return CliConfig(
+        today=today,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=(int(args.seed) if args.seed is not None else None),
+        cache_only=bool(args.cache_only),
+        stub=args.stub,
+    )
 
 
 # ---- Environment / Tool checks ---------------------------------------------
@@ -176,24 +191,39 @@ def macro_analyst(cfg: CliConfig) -> Dict[str, Any]:
             {"role": "user", "content": f"Summarize current Fed stance as of {cfg.today}."},
         ]
         # --- LLM client call goes here ---
-        fake_response = {
-            "id": "resp_macro_001",
-            "choices": [{"message": {"role": "assistant", "content": "Analyst notes (stub)."}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 42, "completion_tokens": 17},
-        }
+        if cfg.stub:
+            resp = {
+                "id": "resp_macro_stub",
+                "choices": [{"message": {"role": "assistant", "content": "Analyst notes (stub)."}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            }
+        else:
+            resp = openrouter_chat(
+                messages,
+                model=ANALYST_MODEL,
+                temperature=cfg.temperature,
+                top_p=cfg.top_p,
+                seed=cfg.seed,
+                max_tokens=800,
+            )
+
         save_llm_call(
             run_id=RUN_ID,
             role="MacroAnalyst",
-            provider="openrouter",
-            model="z-ai/glm-4.5-air:free",
+            provider="openrouter" if not cfg.stub else "stub",
+            model=ANALYST_MODEL,
             messages=messages,
-            response=fake_response,
+            response=resp,
             temperature=cfg.temperature,
             top_p=cfg.top_p,
             seed=cfg.seed,
         )
 
-        analyst_text = fake_response["choices"][0]["message"]["content"]
+        # Extract text
+        body = resp.get("body", resp)
+        choices = body.get("choices", [])
+        analyst_text = choices[0]["message"]["content"] if choices else "(no content)"
+
         save_artifact("macro.notes.md", analyst_text)
         return {"notes": analyst_text, "search": results}
 
@@ -205,29 +235,34 @@ def fact_checker(cfg: CliConfig, analyst: Dict[str, Any]) -> Dict[str, Any]:
             {"role": "system", "content": "You are a meticulous fact checker."},
             {"role": "user", "content": f"Check these notes (as of {cfg.today}):\n\n{analyst['notes']}"},
         ]
-        fake_response = {
-            "id": "resp_fact_001",
-            "choices": [{"message": {"role": "assistant", "content": "Fact check (stub): sources incomplete."}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 64, "completion_tokens": 12},
-        }
-        save_llm_call(
-            run_id=RUN_ID,
-            role="FactChecker",
-            provider="openrouter",
-            model="moonshotai/kimi-k2:free",
-            messages=messages,
-            response=fake_response,
-            temperature=cfg.temperature,
-            top_p=cfg.top_p,
-            seed=cfg.seed,
-        )
-        text = fake_response["choices"][0]["message"]["content"]
-        save_artifact("factcheck.json", {"text": text, "flags": ["sources_incomplete"]})
-        return {"text": text, "flags": ["sources_incomplete"]}
+        if cfg.stub:
+            resp = {
+                "id": "resp_fact_stub",
+                "choices": [{"message": {"role": "assistant", "content": "Fact check (stub): sources incomplete."}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            }
+        else:
+            resp = openrouter_chat(
+                messages,
+                model=FACTCHECK_MODEL,
+                temperature=cfg.temperature,
+                top_p=cfg.top_p,
+                seed=cfg.seed,
+                max_tokens=600,
+            )
+        # Extract text
+        body = resp.get("body", resp)
+        choices = body.get("choices", [])
+        fact_checker_text = choices[0]["message"]["content"] if choices else "(no content)"
+        save_artifact("factcheck.json", {"text": fact_checker_text, "flags": ["sources_incomplete"]})
+        return {"text": fact_checker_text, "flags": ["sources_incomplete"]}
 
 
 # ---- Agent: Executive Writer ------------------------------------------------
+# ---- Agent: Executive Writer ------------------------------------------------
 def executive_writer(cfg: CliConfig, analyst: Dict[str, Any], fact: Dict[str, Any]) -> str:
+    from io_clients import openrouter_chat  # ensure it's imported
+
     with timed_span("ExecutiveWriter"):
         messages = [
             {"role": "system", "content": "You write concise executive briefs with a methodology box."},
@@ -238,27 +273,55 @@ def executive_writer(cfg: CliConfig, analyst: Dict[str, Any], fact: Dict[str, An
                 "flags": fact.get("flags", []),
             })},
         ]
-        fake_response = {
-            "id": "resp_writer_001",
-            "choices": [{"message": {"role": "assistant", "content": (
-                f"""**Federal Reserve Policy Brief – {cfg.today}**\n\n"""
-                "Bottom Line: (stub) Confidence limited due to placeholder sources.\n\n"
-                "**Methodology & Limitations**\n- Search providers used: brave, ddg (stubs)\n- Placeholders present; results are not investment advice.\n"
-            )}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 80, "completion_tokens": 40},
-        }
+
+        if cfg.stub:
+            resp = {
+                "id": "resp_writer_stub",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            f"**Federal Reserve Policy Brief – {cfg.today}**\n\n"
+                            "Bottom Line: (stub) Confidence limited due to placeholder sources.\n\n"
+                            "**Methodology & Limitations**\n"
+                            "- Search providers used: brave, ddg (stubs)\n"
+                            "- Placeholders present; results are not investment advice.\n"
+                        )
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            }
+            provider_used = "stub"
+        else:
+            resp = openrouter_chat(
+                messages,
+                model=WRITER_MODEL,
+                temperature=cfg.temperature,
+                top_p=cfg.top_p,
+                seed=cfg.seed,
+                max_tokens=1200,
+            )
+            provider_used = "openrouter"
+
+        # persist full I/O
         save_llm_call(
             run_id=RUN_ID,
             role="ExecutiveWriter",
-            provider="openrouter",
-            model="openai/gpt-oss-20b:free",
+            provider=provider_used,
+            model=WRITER_MODEL,
             messages=messages,
-            response=fake_response,
+            response=resp,
             temperature=cfg.temperature,
             top_p=cfg.top_p,
             seed=cfg.seed,
         )
-        brief_text = fake_response["choices"][0]["message"]["content"]
+
+        # extract assistant text safely (works for both stub and real responses)
+        body = resp.get("body", resp)  # 'body' exists when coming from fetch(); else use resp directly
+        choices = body.get("choices", [])
+        brief_text = choices[0]["message"]["content"] if choices else "(no content)"
+
         save_artifact("brief.md", brief_text)
         return brief_text
 

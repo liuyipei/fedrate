@@ -144,3 +144,52 @@ def load_sources_jsonl() -> list[dict]:
                 # Optionally log/skip bad line
                 pass
     return items
+
+
+def openrouter_chat(
+    messages: list[dict],
+    *,
+    model: str,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+    seed: int | None = None,
+    max_tokens: int | None = None,
+    timeout_s: float = 60.0,
+) -> dict:
+    """
+    Call OpenRouter's /chat/completions with OpenAI-compatible payload.
+    Returns the raw JSON response.
+    """
+    import os
+    key = os.getenv("OPENROUTER_API_KEY", "")
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set")
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        # Optional but nice:
+        # "HTTP-Referer": "https://your-app.example", 
+        # "X-Title": "fedrate",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    if seed is not None:
+        payload["seed"] = seed
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+
+    # Use our fetch() so we get retries/telemetry; don't cache LLM outputs
+    return fetch(
+        "openrouter",
+        "https://openrouter.ai/api/v1/chat/completions",
+        method="POST",
+        json_body=payload,
+        headers=headers,
+        use_cache=False,
+        timeout_s=timeout_s,
+    )
