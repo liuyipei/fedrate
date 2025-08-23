@@ -103,20 +103,44 @@ def save_llm_call(
     log.info(json.dumps({"event":"llm_saved","role":role,"path":str(p)}))
     return p
 
-# --------------------------- Provenance helper -------------------------------
-
-def record_source(claim: str, url: str, snippet: str, store_as: str = "sources.json") -> None:
+# --- JSONL provenance (append-safe) -----------------------------------------
+def sources_jsonl_path():
     from run_logging import ART_DIR, RUN_ID
-    p = ART_DIR / f"{RUN_ID}.{store_as}"
-    items = []
-    if p.exists():
-        try:
-            items = json.loads(p.read_text())
-        except Exception:
-            items = []
-    items.append({
+    return ART_DIR / f"{RUN_ID}.sources.jsonl"
+
+def record_source_jsonl(claim: str, url: str, snippet: str, extra: dict | None = None) -> None:
+    """
+    Append one provenance record as a JSON line. Concurrency-friendly.
+    """
+    import json, time
+    p = sources_jsonl_path()
+    rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "claim": claim, "url": url, "snippet": snippet
-    })
-    p.write_text(json.dumps(items, indent=2))
-    log.info(json.dumps({"event":"source_recorded","url":url,"claim":claim[:80]}))
+        "claim": claim,
+        "url": url,
+        "snippet": snippet,
+    }
+    if extra:
+        rec.update(extra)
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+def load_sources_jsonl() -> list[dict]:
+    """
+    Read all JSONL records as a list (tolerates blank lines).
+    """
+    p = sources_jsonl_path()
+    items: list[dict] = []
+    if not p.exists():
+        return items
+    with open(p, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except Exception:
+                # Optionally log/skip bad line
+                pass
+    return items

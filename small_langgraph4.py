@@ -7,7 +7,7 @@ A trimmed, monitoring-first rewrite of your research workflow that wires in:
   - Per-run manifest + artifacts
   - HTTP client with caching/retries (via io_clients.fetch)
   - LLM prompt/response snapshotting (via io_clients.save_llm_call)
-  - Source/citation recorder (via io_clients.record_source)
+  - Source/citation recorder (via io_clients.record_source_jsonl)
   - Deterministic date handling with FEDRATE_TODAY or --today
 
 This keeps your three-agent shape (Macro Analyst → Fact Checker → Executive Writer)
@@ -44,7 +44,7 @@ from run_logging import (
     save_artifact,
     get_today,
 )
-from io_clients import fetch, save_llm_call, record_source
+from io_clients import fetch, save_llm_call, record_source_jsonl, load_sources_jsonl
 
 
 log = init_logging()
@@ -131,14 +131,17 @@ def search_with_fallback(query: str, cfg: CliConfig) -> List[Dict[str, Any]]:
                 results = [
                     {"title": item.get("title"),
                     "url": item.get("url"),
-                    "snippet": item.get("description")}
+                    "snippet": item.get("description"),
+                    "provider": provider,}
                     for item in body.get("web", {}).get("results", [])
                 ]
             else:
                 # still stub parse for DDG
                 results = [{"title": f"{query} (stub)",
                             "url": url + "?q=" + query,
-                            "snippet": "Search stub"}]
+                            "snippet": "Search stub",
+                            "provider": provider,
+                            }]
 
             log.info(json.dumps({"event": "search_ok", "provider": provider, "q": query}))
             return results
@@ -160,7 +163,12 @@ def macro_analyst(cfg: CliConfig) -> Dict[str, Any]:
 
         # Record at least one source for provenance (stub)
         for r in results[:2]:
-            record_source(claim=f"Search evidence for {cfg.today}", url=r["url"], snippet=r["snippet"])
+            record_source_jsonl(
+                claim=f"Search evidence for {cfg.today}",
+                url=r["url"],
+                snippet=r["snippet"],
+                extra={"provider": r.get("provider", "unknown")}
+            )
 
         # Call LLM (pseudo) — replace with your client and pass through params
         messages = [
@@ -281,6 +289,20 @@ def main() -> int:
     }
     save_artifact("debug.json", debug_info)
     log.info(json.dumps({"event": "done", "run_id": RUN_ID, "artifacts": debug_info}))
+
+    sources_list = load_sources_jsonl()
+    sources_json_path = ART_DIR / f"{RUN_ID}.sources.json"
+    if sources_list or not sources_json_path.exists():
+        sources_json_path.write_text(json.dumps(sources_list, indent=2))
+        log.info(json.dumps({"event":"artifact_saved","name":"sources.json","path":str(sources_json_path)}))
+
+    debug_info = {
+        "search_results_found": sum(1 for _ in analyst.get("search", [])),
+        "sources_file_jsonl": str(ART_DIR / f"{RUN_ID}.sources.jsonl"),
+        "sources_file_json": str(sources_json_path),
+        "errors": fact.get("flags", []),
+    }
+    save_artifact("debug.json", debug_info)
     return 0
 
 
