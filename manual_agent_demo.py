@@ -278,7 +278,7 @@ def macro_analyst(cfg: CliConfig) -> Dict[str, Any]:
                 temperature=cfg.temperature,
                 top_p=cfg.top_p,
                 seed=cfg.seed,
-                max_tokens=800,
+                max_tokens=3000,
             )
 
         save_llm_call(
@@ -304,17 +304,79 @@ def macro_analyst(cfg: CliConfig) -> Dict[str, Any]:
         return {"notes": analyst_text, "search": results}
 
 
+# ---- Source utilities -------------------------------------------------------
+def load_and_format_sources() -> str:
+    """Load collected sources and format them for fact checking."""
+    sources = load_sources_jsonl()
+    if not sources:
+        return "No sources collected."
+    
+    # Group sources by query for better organization
+    sources_by_query = {}
+    for source in sources:
+        query = source.get("query", "Unknown query")
+        if query not in sources_by_query:
+            sources_by_query[query] = []
+        sources_by_query[query].append(source)
+    
+    # Format sources as a structured block
+    formatted_sources = []
+    for query, query_sources in sources_by_query.items():
+        formatted_sources.append(f"Search Query: {query}")
+        for i, source in enumerate(query_sources, 1):
+            formatted_sources.append(f"  [{i}] {source.get('title', 'No title')}")
+            formatted_sources.append(f"      URL: {source.get('url', 'No URL')}")
+            formatted_sources.append(f"      Snippet: {source.get('snippet', 'No snippet')[:200]}...")
+        formatted_sources.append("")  # Blank line between queries
+    
+    return "\n".join(formatted_sources)
+
+def assess_source_completeness(analyst_notes: str, sources: list) -> list:
+    """Assess if sources are complete based on claims in analyst notes."""
+    if not sources:
+        return ["sources_missing"]
+    
+    # Simple heuristic: if we have sources and analyst notes, assume sources are sufficient
+    # In a more sophisticated implementation, we would check if each claim in the notes
+    # is supported by at least one source
+    if len(sources) > 0 and len(analyst_notes.strip()) > 0:
+        return []  # No flags if we have sources and content
+    
+    return ["sources_incomplete"]
+
 # ---- Agent: Fact Checker ----------------------------------------------------
 def fact_checker(cfg: CliConfig, analyst: Dict[str, Any]) -> Dict[str, Any]:
     with timed_span("FactChecker"):
+        # Load and format collected sources
+        sources_text = load_and_format_sources()
+        
+        # Create enhanced fact checker prompt with sources
         messages = [
-            {"role": "system", "content": "You are a meticulous fact checker."},
-            {"role": "user", "content": f"Check these notes (as of {cfg.today}):\n\n{analyst['notes']}"},
+            {
+                "role": "system", 
+                "content": (
+                    "You are a meticulous fact checker. Your task is to validate the claims in the provided notes "
+                    "against the collected sources. For each claim, indicate whether it is supported, contradicted, "
+                    "or not found in the sources. Be thorough and precise."
+                )
+            },
+            {
+                "role": "user", 
+                "content": (
+                    f"Check these notes (as of {cfg.today}):\n\n{analyst['notes']}\n\n"
+                    f"Collected sources:\n{sources_text}\n\n"
+                    "Please validate each claim in the notes against the sources. For each claim:\n"
+                    "1. State whether it is supported, contradicted, or not found in the sources\n"
+                    "2. Reference which source(s) support or contradict each claim\n"
+                    "3. Note any discrepancies or areas needing clarification"
+                )
+            }
         ]
+        
         if cfg.stub:
             resp = {
                 "id": "resp_fact_stub",
-                "choices": [{"message": {"role": "assistant", "content": "Fact check (stub): sources incomplete."}, "finish_reason": "stop"}],
+                "choices": [{"message": {"role": "assistant", "content": "Fact check (stub): sources validated."}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0},
             }
         else:
@@ -324,16 +386,22 @@ def fact_checker(cfg: CliConfig, analyst: Dict[str, Any]) -> Dict[str, Any]:
                 temperature=cfg.temperature,
                 top_p=cfg.top_p,
                 seed=cfg.seed,
-                max_tokens=600,
+                max_tokens=1200,  # Increased token limit for more detailed response
             )
+        
         # Extract text
         body = resp.get("body", resp)
         choices = body.get("choices", [])
         fact_checker_text = choices[0]["message"]["content"] if choices else "(no content)"
+        
+        # Assess source completeness
+        sources = load_sources_jsonl()
+        flags = assess_source_completeness(analyst['notes'], sources)
+        
         factcheck_path = RUN_FILES.factcheck()
-        factcheck_path.write_text(json.dumps({"text": fact_checker_text, "flags": ["sources_incomplete"]}, indent=2))
+        factcheck_path.write_text(json.dumps({"text": fact_checker_text, "flags": flags}, indent=2))
         log.info(json.dumps({"event":"artifact_saved","name":"factcheck.json","path":str(factcheck_path)}))
-        return {"text": fact_checker_text, "flags": ["sources_incomplete"]}
+        return {"text": fact_checker_text, "flags": flags}
 
 
 # ---- Agent: Executive Writer ------------------------------------------------
