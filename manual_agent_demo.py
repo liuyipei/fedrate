@@ -193,8 +193,9 @@ def macro_analyst(cfg: CliConfig) -> Dict[str, Any]:
         results = rec.all_results  # unique results across queries (in the order recorded)
 
         # Build RAG prompt using exactly what we recorded
-        ## sources_block = rec.context_block(max_items=8) 
-        # Hard code this for now.
+        ## sources_block = rec.context_block(max_items=8)
+        # We should ideally use the SERP and scraping to populate the following. However, for the purposes of a demo,
+        # Hard code this content for now.
         sources_block = """
 - Today’s Date:
   - August 24, 2025
