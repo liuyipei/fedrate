@@ -97,16 +97,17 @@ def save_llm_call(
         "messages": messages,
         "response": response,
     }
-    from run_logging import ART_DIR, RUN_ID  # local import to avoid cycles
-    p = ART_DIR / f"{RUN_ID}.{role}.{int(time.time())}.llm.json"
+    from run_logging import RUN_FILES  # local import to avoid cycles
+    timestamp = int(time.time())
+    p = RUN_FILES.macro_analyst_llm(timestamp) if role == "MacroAnalyst" else RUN_FILES.executive_writer_llm(timestamp)
     p.write_text(json.dumps(record, indent=2))
     log.info(json.dumps({"event":"llm_saved","role":role,"path":str(p)}))
     return p
 
 # --- JSONL provenance (append-safe) -----------------------------------------
 def sources_jsonl_path():
-    from run_logging import ART_DIR, RUN_ID
-    return ART_DIR / f"{RUN_ID}.sources.final.jsonl"
+    from run_logging import RUN_FILES
+    return RUN_FILES.sources_final()
 
 def record_source_jsonl(claim: str, url: str, snippet: str, extra: dict | None = None) -> None:
     """

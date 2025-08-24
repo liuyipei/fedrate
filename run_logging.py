@@ -7,8 +7,12 @@ from contextlib import contextmanager
 # ---- Public API --------------------------------------------------------------
 
 RUN_ID = os.environ.get("RUN_ID", str(uuid.uuid4())[:8])
-ART_DIR = Path(os.environ.get("FEDRATE_ART_DIR", "runs"))
+ART_DIR = Path(os.getenv("FEDRATE_ART_DIR", "runs"))
 ART_DIR.mkdir(parents=True, exist_ok=True)
+
+# Import RunFiles class
+from run_files import RunFiles
+RUN_FILES = RunFiles(RUN_ID, ART_DIR)
 
 def init_logging(level: str | None = None) -> logging.Logger:
     lvl = getattr(logging, (level or os.getenv("LOGLEVEL", "INFO")).upper(), logging.INFO)
@@ -31,7 +35,7 @@ def write_manifest(extra_env_prefix: str = "FEDRATE_") -> Path:
         "env_flags": {k: v for k, v in os.environ.items() if k.startswith(extra_env_prefix)},
         "ts": _now_iso(),
     }
-    p = ART_DIR / f"{RUN_ID}.manifest.json"
+    p = RUN_FILES.manifest()
     p.write_text(json.dumps(manifest, indent=2))
     logging.getLogger("fedrate").info(json.dumps({"event":"manifest_written","path":str(p)}))
     return p

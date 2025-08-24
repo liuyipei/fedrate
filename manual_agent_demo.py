@@ -1,6 +1,7 @@
+# manual_agent_demo.py
 from __future__ import annotations
 """
-small_langgraph4.py
+
 
 A trimmed, monitoring-first rewrite of your research workflow that wires in:
   - Structured JSON logging with a stable RUN_ID
@@ -17,9 +18,10 @@ Requires the companion files introduced earlier:
   - run_logging.py
   - io_clients.py
 
+
 Usage examples:
-  FEDRATE_TODAY=2025-08-23 python small_langgraph4.py
-  python small_langgraph4.py --today 2025-08-23 --temperature 0 --seed 42
+  Start from federate/
+  python3 manual_agent_demo.py --today 2025-08-23 --temperature 0 --seed 42
 
 Notes:
   - External APIs here are represented as simple calls to `fetch`. Replace the URLs
@@ -39,16 +41,19 @@ from run_logging import (
     init_logging,
     write_manifest,
     timed_span,
-    ART_DIR,
     RUN_ID,
-    save_artifact,
     get_today,
 )
+from run_files import RunFiles
 from io_clients import fetch, save_llm_call, record_source_jsonl, load_sources_jsonl, openrouter_chat
 
 
 log = init_logging()
 write_manifest()
+
+# Create RunFiles instance
+from run_logging import ART_DIR
+RUN_FILES = RunFiles(RUN_ID, ART_DIR)
 
 # ---- Model constants --------------------------------------------------------
 ANALYST_MODEL   = "z-ai/glm-4.5-air:free"
@@ -293,7 +298,9 @@ def macro_analyst(cfg: CliConfig) -> Dict[str, Any]:
         choices = body.get("choices", [])
         analyst_text = choices[0]["message"]["content"] if choices else "(no content)"
 
-        save_artifact("macro.notes.md", analyst_text)
+        macro_notes_path = RUN_FILES.macro_notes()
+        macro_notes_path.write_text(analyst_text)
+        log.info(json.dumps({"event":"artifact_saved","name":"macro.notes.md","path":str(macro_notes_path)}))
         return {"notes": analyst_text, "search": results}
 
 
@@ -323,7 +330,9 @@ def fact_checker(cfg: CliConfig, analyst: Dict[str, Any]) -> Dict[str, Any]:
         body = resp.get("body", resp)
         choices = body.get("choices", [])
         fact_checker_text = choices[0]["message"]["content"] if choices else "(no content)"
-        save_artifact("factcheck.json", {"text": fact_checker_text, "flags": ["sources_incomplete"]})
+        factcheck_path = RUN_FILES.factcheck()
+        factcheck_path.write_text(json.dumps({"text": fact_checker_text, "flags": ["sources_incomplete"]}, indent=2))
+        log.info(json.dumps({"event":"artifact_saved","name":"factcheck.json","path":str(factcheck_path)}))
         return {"text": fact_checker_text, "flags": ["sources_incomplete"]}
 
 
@@ -390,7 +399,9 @@ def executive_writer(cfg: CliConfig, analyst: Dict[str, Any], fact: Dict[str, An
         choices = body.get("choices", [])
         brief_text = choices[0]["message"]["content"] if choices else "(no content)"
 
-        save_artifact("brief.md", brief_text)
+        brief_path = RUN_FILES.brief()
+        brief_path.write_text(brief_text)
+        log.info(json.dumps({"event":"artifact_saved","name":"brief.md","path":str(brief_path)}))
         return brief_text
 
 
@@ -405,7 +416,7 @@ def main() -> int:
     try:
         with timed_span("Pipeline"):
             analyst = macro_analyst(cfg)
-            sources_path = ART_DIR / f"{RUN_ID}.sources.raw.json"
+            sources_path = RUN_FILES.sources_raw()
             fact = fact_checker(cfg, analyst)
             brief = executive_writer(cfg, analyst, fact)
     except Exception as e:
@@ -415,29 +426,30 @@ def main() -> int:
     # Summarize debug info
     debug_info = {
         "search_results_found": sum(1 for _ in analyst.get("search", [])),
-        "sources_file": f"runs/{RUN_ID}.sources.raw.json",
+        "sources_file": str(RUN_FILES.sources_raw()),
         "errors": fact.get("flags", []),
     }
-    save_artifact("debug.json", debug_info)
+    debug_path = RUN_FILES.debug()
+    debug_path.write_text(json.dumps(debug_info, indent=2))
     log.info(json.dumps({"event": "done", "run_id": RUN_ID, "artifacts": debug_info}))
 
     sources_list = load_sources_jsonl()
-    sources_json_path = ART_DIR / f"{RUN_ID}.sources.raw.json"
+    sources_json_path = RUN_FILES.sources_raw()
     if sources_list or not sources_json_path.exists():
         sources_json_path.write_text(json.dumps(sources_list, indent=2))
         log.info(json.dumps({"event":"artifact_saved","name":"sources.raw.json","path":str(sources_json_path)}))
 
     debug_info = {
         "search_results_found": sum(1 for _ in analyst.get("search", [])),
-        "sources_file_jsonl": str(ART_DIR / f"{RUN_ID}.sources.final.jsonl"),
+        "sources_file_jsonl": str(RUN_FILES.sources_final()),
         "sources_file_json": str(sources_json_path),
         "errors": fact.get("flags", []),
     }
-    save_artifact("debug.json", debug_info)
+    debug_path = RUN_FILES.debug()
+    debug_path.write_text(json.dumps(debug_info, indent=2))
+    log.info(json.dumps({"event":"artifact_saved","name":"debug.json","path":str(debug_path)}))
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
