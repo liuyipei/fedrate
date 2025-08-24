@@ -144,19 +144,22 @@ def search_with_fallback(query: str, cfg: CliConfig) -> List[Dict[str, Any]]:
             body = res.get("body")
             if provider == "brave" and isinstance(body, dict):
                 results = [
-                    {"title": item.get("title"),
-                    "url": item.get("url"),
-                    "snippet": item.get("description"),
-                    "provider": provider,}
-                    for item in body.get("web", {}).get("results", [])
+                    {
+                        "title": it.get("title") or "",
+                        "url": it.get("url") or "",
+                        "snippet": (it.get("description") or "").replace("<strong>","").replace("</strong>",""),
+                        "provider": "brave",
+                    }
+                    for it in body.get("web", {}).get("results", [])
                 ]
             else:
                 # still stub parse for DDG
-                results = [{"title": f"{query} (stub)",
-                            "url": url + "?q=" + query,
-                            "snippet": "Search stub",
-                            "provider": provider,
-                            }]
+                results = [{
+                    "title": f"{query} (stub)",
+                    "url": url + "?q=" + query,
+                    "snippet": "Search stub",
+                    "provider": "ddg",
+                }]
 
             log.info(json.dumps({"event": "search_ok", "provider": provider, "q": query}))
             return results
@@ -168,27 +171,93 @@ def search_with_fallback(query: str, cfg: CliConfig) -> List[Dict[str, Any]]:
 
 
 # ---- Agent: Macro Analyst ---------------------------------------------------
+TOP_SERP_PER_QUERY = 6  # tune as you like
+
 def macro_analyst(cfg: CliConfig) -> Dict[str, Any]:
     with timed_span("MacroAnalyst"):
-        q1 = f"Federal Reserve FOMC meeting {cfg.today}"
-        q2 = "Fed funds rate current"
-        results = []
-        results += search_with_fallback(q1, cfg)
-        results += search_with_fallback(q2, cfg)
+        q1 = f"Federal Reserve FOMC Jackson Hole meeting July 30, 2025"
+        q2 = "Jerome Powell Fed funds rate July 30, 2025"
+        from serp_utils import SerpRecorder
+        # record up to K per query, but never exceed run_cap across all queries
+        rec = SerpRecorder(top_k_per_query=TOP_SERP_PER_QUERY, run_cap=20)
 
-        # Record at least one source for provenance (stub)
-        for r in results[:2]:
-            record_source_jsonl(
-                claim=f"Search evidence for {cfg.today}",
-                url=r["url"],
-                snippet=r["snippet"],
-                extra={"provider": r.get("provider", "unknown")}
-            )
+        for query in (q1, q2):
+            res = search_with_fallback(query, cfg)  # make sure each item has title/url/snippet/provider
+            _ = rec.record_query_results(res, query=query)  # returns how many it recorded for this query
 
-        # Call LLM (pseudo) — replace with your client and pass through params
+        results = rec.all_results  # unique results across queries (in the order recorded)
+
+        # Build RAG prompt using exactly what we recorded
+        ## sources_block = rec.context_block(max_items=8) 
+        # Hard code this for now.
+        sources_block = """
+- Today’s Date:
+  - August 24, 2025
+
+- Current Effective Fed Funds Range & Stance:
+  - Target range: 4.25%–4.50%, held steady at the July 29–30 FOMC meeting (two dissents preferring a cut)  
+    https://www.fedprimerate.com/fedfundsrate/federal_funds_rate_history.htm
+  - Effective Federal Funds Rate: ~4.33% (Aug 21 daily)  
+    https://fred.stlouisfed.org/series/DFF
+
+- Market-Implied Path for Next 2–4 FOMC Meetings (CME FedWatch):
+  - September: ~80% probability of a 25 bp cut  
+    https://www.cmegroup.com/newsletters/infocus/2025/08/markets-slow-to-start-the-week.html
+  - October: ~60% probability of a cut  
+    https://www.cmegroup.com/newsletters/infocus/2025/08/equities-rebound-to-start-the-week0.html
+  - December: ~53% probability of a third cut by year-end  
+    https://www.cmegroup.com/newsletters/infocus/2025/08/equities-rebound-to-start-the-week0.html
+
+- Key FOMC Messaging (Statement, Minutes, SEP, Dot Plot):
+  - Statement (July 30): Held steady, inflation still elevated, data-dependent stance  
+    https://timesofindia.indiatimes.com/business/international-business/powell-doesnt-bow-to-trump-pressure-us-fed-keeps-interest-rate-unchanged-heres-what-the-fomc-statement-said/articleshow/123003483.cms
+  - Minutes: Majority saw inflation as bigger risk, two dissents for a cut  
+    https://www.bloomberg.com/news/articles/2025-08-20/fed-minutes-show-majority-of-fomc-saw-inflation-as-greater-risk  
+    https://www.wsj.com/economy/central-banking/fed-minutes-july-meeting-ec9ab128
+  - SEP/Dot Plot (June 2025): Two 25 bp cuts projected in 2025, ~3.5–3.75% end-2026, long-run ~3%  
+    https://www.bondsavvy.com/fixed-income-investments-blog/fed-dot-plot  
+    https://www.fidelity.com/learning-center/trading-investing/federal-reserve-dot-plot
+
+- Key Policy Drivers:
+  - Inflation: Above 2%, tariff effects boosting goods prices  
+    https://www.bloomberg.com/news/articles/2025-08-20/fed-minutes-show-majority-of-fomc-saw-inflation-as-greater-risk
+  - Labor Market: Signs of weakening, though unemployment still low  
+    https://www.bloomberg.com/news/articles/2025-08-20/fed-minutes-show-majority-of-fomc-saw-inflation-as-greater-risk
+  - Growth: Slowed in 2025, Q2 bounce not sustained  
+    https://www.kiplinger.com/newsg/live/july-fed-meeting-updates-and-commentary-2025  
+    https://www.bondsavvy.com/fixed-income-investments-blog/fed-dot-plot
+  - Financial Conditions: Tighter credit, resilient equities/households, tariff headwinds  
+    (drawn from FOMC commentary and minutes)
+
+- Consensus Views (Reputable Sources):
+  - Barron’s: Markets expect September cut; Powell signaled dovish tilt  
+    https://www.barrons.com/articles/fed-powell-rate-cuts-stock-market-jackson-hole-423f528d
+  - Reuters Breakingviews: Powell opened door to September cut, but stressed data-dependence  
+    https://www.reuters.com/commentary/breakingviews/powells-fed-finale-self-unraveling-consensus-2025-08-22
+  - Wall Street Journal: Minutes show broad support for hold, inflation concerns dominate, markets eye September cut  
+    https://www.wsj.com/economy/central-banking/fed-minutes-july-meeting-ec9ab128
+        """
         messages = [
-            {"role": "system", "content": "You are a macro analyst."},
-            {"role": "user", "content": f"Summarize current Fed stance as of {cfg.today}."},
+            {
+                "role": "system",
+                "content": (
+                    "You are a macro analyst. Use ONLY the sources provided under the 'Context' section. "
+                    "Do NOT mention training data or knowledge cutoff. If the context is insufficient to answer, "
+                    "respond with EXACTLY: INSUFFICIENT_SOURCES."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Task: Summarize the Federal Reserve's current policy stance as of {cfg.today}.\n\n"
+                    "Output:\n"
+                    "1) One-paragraph bottom line.\n"
+                    "2) 3-5 bullet drivers (inflation, labor, growth, financial conditions).\n"
+                    "3) Cite sources inline with [#] indices that match the Context list.\n\n"
+                    "Context:\n"
+                    f"{sources_block}"
+                ),
+            },
         ]
         # --- LLM client call goes here ---
         if cfg.stub:
@@ -258,7 +327,6 @@ def fact_checker(cfg: CliConfig, analyst: Dict[str, Any]) -> Dict[str, Any]:
         return {"text": fact_checker_text, "flags": ["sources_incomplete"]}
 
 
-# ---- Agent: Executive Writer ------------------------------------------------
 # ---- Agent: Executive Writer ------------------------------------------------
 def executive_writer(cfg: CliConfig, analyst: Dict[str, Any], fact: Dict[str, Any]) -> str:
     from io_clients import openrouter_chat  # ensure it's imported
@@ -337,7 +405,7 @@ def main() -> int:
     try:
         with timed_span("Pipeline"):
             analyst = macro_analyst(cfg)
-            sources_path = ART_DIR / f"{RUN_ID}.sources.json"
+            sources_path = ART_DIR / f"{RUN_ID}.sources.raw.json"
             fact = fact_checker(cfg, analyst)
             brief = executive_writer(cfg, analyst, fact)
     except Exception as e:
@@ -347,21 +415,21 @@ def main() -> int:
     # Summarize debug info
     debug_info = {
         "search_results_found": sum(1 for _ in analyst.get("search", [])),
-        "sources_file": f"runs/{RUN_ID}.sources.json",
+        "sources_file": f"runs/{RUN_ID}.sources.raw.json",
         "errors": fact.get("flags", []),
     }
     save_artifact("debug.json", debug_info)
     log.info(json.dumps({"event": "done", "run_id": RUN_ID, "artifacts": debug_info}))
 
     sources_list = load_sources_jsonl()
-    sources_json_path = ART_DIR / f"{RUN_ID}.sources.json"
+    sources_json_path = ART_DIR / f"{RUN_ID}.sources.raw.json"
     if sources_list or not sources_json_path.exists():
         sources_json_path.write_text(json.dumps(sources_list, indent=2))
-        log.info(json.dumps({"event":"artifact_saved","name":"sources.json","path":str(sources_json_path)}))
+        log.info(json.dumps({"event":"artifact_saved","name":"sources.raw.json","path":str(sources_json_path)}))
 
     debug_info = {
         "search_results_found": sum(1 for _ in analyst.get("search", [])),
-        "sources_file_jsonl": str(ART_DIR / f"{RUN_ID}.sources.jsonl"),
+        "sources_file_jsonl": str(ART_DIR / f"{RUN_ID}.sources.final.jsonl"),
         "sources_file_json": str(sources_json_path),
         "errors": fact.get("flags", []),
     }

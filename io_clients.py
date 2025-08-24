@@ -106,7 +106,7 @@ def save_llm_call(
 # --- JSONL provenance (append-safe) -----------------------------------------
 def sources_jsonl_path():
     from run_logging import ART_DIR, RUN_ID
-    return ART_DIR / f"{RUN_ID}.sources.jsonl"
+    return ART_DIR / f"{RUN_ID}.sources.final.jsonl"
 
 def record_source_jsonl(claim: str, url: str, snippet: str, extra: dict | None = None) -> None:
     """
