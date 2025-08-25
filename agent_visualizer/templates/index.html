@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <!-- Step 1: Search & Sources -->
+        <section id="sources-section" class="mb-5">
+            <div class="card">
+                <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                    <h2 class="mb-0"><i class="bi bi-search"></i> Step 1: Search & Sources Collection</h2>
+                    <span class="badge bg-light text-dark">{{ sources|length if sources else 0 }} sources</span>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">The workflow begins by searching for relevant information using two queries:</p>
+                    <ul>
+                        <li>"Federal Reserve FOMC Jackson Hole meeting July 30, 2025"</li>
+                        <li>"Jerome Powell Fed funds rate July 30, 2025"</li>
+                    </ul>
+                    
+                    {% if sources %}
+                    <div class="row">
+                        {% for source in sources %}
+                        <div class="col-md-6 col-lg-4 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h5 class="card-title">{{ source.title }}</h5>
+                                    <p class="card-text">
+                                        <small class="text-muted">
+                                            <i class="bi bi-link"></i> {{ source.provider }}<br>
+                                            <i class="bi bi-globe"></i> {{ source.url[:50] }}...
+                                        </small>
+                                    </p>
+                                    <p class="card-text">{{ source.snippet[:150] }}...</p>
+                                    <a href="{{ source.url }}" class="btn btn-outline-primary btn-sm" target="_blank">
+                                        <i class="bi bi-box-arrow-up-right"></i> View Source
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> No sources data available.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 2: Macro Analysis -->
+        <section id="macro-section" class="mb-5">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h2 class="mb-0"><i class="bi bi-bar-chart-line"></i> Step 2: Macro Analysis</h2>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">The macro analyst processes the collected sources to generate an initial analysis of Federal Reserve policy.</p>
+                    
+                    {% if macro_notes %}
+                    <div class="bg-light p-4 rounded">
+                        {{ macro_notes|safe }}
+                    </div>
+                    {% else %}
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> No macro analysis data available.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 3: Fact Checking -->
+        <section id="factcheck-section" class="mb-5">
+            <div class="card">
+                <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                    <h2 class="mb-0"><i class="bi bi-check-circle"></i> Step 3: Fact Checking</h2>
+                    {% if factcheck_flags %}
+                    <span class="badge bg-danger">{{ factcheck_flags|length }} flags</span>
+                    {% endif %}
+                </div>
+                <div class="card-body">
+                    <p class="card-text">The fact checker validates the macro analyst's claims against the collected sources.</p>
+                    
+                    {% if factcheck_text %}
+                    <div class="bg-light p-4 rounded">
+                        {{ factcheck_text|safe }}
+                    </div>
+                    {% else %}
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> No fact check data available.
+                    </div>
+                    {% endif %}
+                    
+                    {% if factcheck_flags %}
+                    <div class="mt-3">
+                        <h5>Fact Check Flags:</h5>
+                        <ul>
+                            {% for flag in factcheck_flags %}
+                            <li class="text-danger">{{ flag }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 4: Executive Brief -->
+        <section id="brief-section" class="mb-5">
+            <div class="card">
+                <div class="card-header bg-info text-white">
+                    <h2 class="mb-0"><i class="bi bi-file-earmark-text"></i> Step 4: Executive Writing</h2>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">The executive writer synthesizes all information into a concise executive brief.</p>
+                    
+                    {% if brief_content %}
+                    <div class="bg-light p-4 rounded">
+                        {{ brief_content|safe }}
+                    </div>
+                    {% else %}
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> No executive brief data available.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}
